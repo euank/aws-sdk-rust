@@ -1,0 +1,10 @@
+[package]
+name = "aws-sdk-rust"
+version = "0.1.0"
+authors = ["euank <euank@euank.com>"]
+
+[dependencies]
+hyper = "0.6"
+rustc-serialize = "*"
+rust-crypto = "*"
+time = "*"
