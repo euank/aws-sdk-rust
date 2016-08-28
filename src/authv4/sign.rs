@@ -31,31 +31,7 @@ impl Signable for Request<Fresh> {
                      -> Request<Fresh> {
         let canonical_path = &self.url.serialize_path().unwrap_or("".to_string());
         let canonical_query = &(self.url.clone().query.unwrap_or("".to_string()));
-
-        let mut header_keys: Vec<String> = self.headers()
-                                               .iter()
-                                               .map(|h| h.name().to_string().to_ascii_lowercase())
-                                               .collect();
-        header_keys.sort();
-
-        let canonical_headers: Vec<String> = header_keys.iter()
-                                                        .map(|key| {
-                                                            let header_value = self.headers()
-                                                                                   .get_raw(key)
-                                                                                   .unwrap();
-                                                            let strheaders: Vec<String> =
-                                                                header_value.iter()
-                                                                            .map(|el| {
-                                                                                str::from_utf8(el)
-                                                                                    .unwrap()
-                                                                                    .trim()
-                                                                                    .to_string()
-                                                                            })
-                                                                            .collect();
-                                                            key.to_string() + ":" +
-                                                            &strheaders.join(",")
-                                                        })
-                                                        .collect();
+        let (header_keys, canonical_headers) = canonicalize_headers(self.headers());
 
         let mut hasher = Sha256::new();
         if let Some(mut b) = body {
@@ -72,10 +48,9 @@ impl Signable for Request<Fresh> {
         // https://docs.aws.amazon.com/general/latest/gr/sigv4-create-canonical-request.html
         let canonical_request = self.method().as_ref().to_string() + "\n" + canonical_path +
                                 "\n" + &canonical_query + "\n" +
-                                &canonical_headers.connect("\n") +
-                                "\n\n" +
-                                &header_keys.connect(";") + "\n" +
-                                &hasher.result_str();
+                                &canonical_headers.join("\n") +
+                                "\n\n" + &header_keys.join(";") +
+                                "\n" + &hasher.result_str();
 
         let mut canonical_request_hasher = Sha256::new();
         canonical_request_hasher.input(&canonical_request.as_ref());
@@ -112,11 +87,35 @@ impl Signable for Request<Fresh> {
                                &ymd.to_string() + "/" + &region +
                                "/" + &service +
                                "/aws4_request, " + "SignedHeaders=" +
-                               &header_keys.connect(";") + ", " +
-                               "Signature=" +
-                               &signature.to_hex()));
+                               &header_keys.join(";") + ", " +
+                               "Signature=" + &signature.to_hex()));
         self
     }
+}
+
+fn canonicalize_headers(headers: &hyper::header::Headers) -> (Vec<String>, Vec<String>) {
+    let mut header_keys: Vec<String> = headers.iter()
+                                              .map(|h| h.name().to_string().to_ascii_lowercase())
+                                              .collect();
+    header_keys.sort();
+    let canonical_headers = header_keys.iter()
+                                       .map(|key| {
+                                           let header_value = headers.get_raw(key)
+                                                                     .unwrap();
+                                           let strheaders: Vec<String> =
+                                               header_value.iter()
+                                                           .map(|el| {
+                                                               str::from_utf8(el)
+                                                                   .unwrap()
+                                                                   .trim()
+                                                                   .to_string()
+                                                           })
+                                                           .collect();
+                                           key.to_string() + ":" + &strheaders.join(",")
+                                       })
+                                       .collect();
+
+    (header_keys, canonical_headers)
 }
 
 header! { (AmzSecurityToken, "X-Amz-Security-Token") => [String] }
@@ -128,7 +127,7 @@ header! { (XAmzDate, "x-amz-date") => [String] }
 #[test]
 fn it_signs_an_example_request() {
     use self::hyper::Url;
-    use self::hyper::header::{ContentType,UserAgent};
+    use self::hyper::header::{ContentType, UserAgent};
     use self::hyper::method::Method;
     use self::hyper::mime::Mime;
     use std::io::Cursor;
@@ -138,7 +137,10 @@ fn it_signs_an_example_request() {
         secret_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
         session_token: "".to_string(),
     };
-    let date = time::at(time::Timespec{sec: 100, nsec: 0});
+    let date = time::at(time::Timespec {
+        sec: 100,
+        nsec: 0,
+    });
     let mut req = Request::new(Method::Post,
                                Url::parse("https://ecs.us-east-1.amazonaws.com/").unwrap())
                       .unwrap();
@@ -158,15 +160,13 @@ fn it_signs_an_example_request() {
                           credentials);
 
     let resulting_sig = result.headers().get::<Authorization>();
-    assert_eq!(resulting_sig, Some(&Authorization("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/19700101/us-east-1/ecs/aws4_request, SignedHeaders=content-type;host;user-agent;x-amz-date;x-amz-target, Signature=dba059855bfec128396fc743b942fb8438e95e8af80497544cf5b4c612d423bd".to_string())));
+    assert_eq!(resulting_sig,
+               Some(&Authorization("AWS4-HMAC-SHA256 \
+                                    Credential=AKIAIOSFODNN7EXAMPLE/19700101/us-east-1/ecs/aws4\
+                                    _request, \
+                                    SignedHeaders=content-type;host;user-agent;x-amz-date;\
+                                    x-amz-target, \
+                                    Signature=dba059855bfec128396fc743b942fb8438e95e8af80497544\
+                                    cf5b4c612d423bd"
+                                       .to_string())));
 }
-
-// TODO functional test
-/*
-    let mut started = result.start().unwrap();
-    started.write(body.as_bytes());
-    let mut response = started.send().unwrap();
-
-    let mut body = Vec::new();
-    response.read_to_end(&mut body);
-*/
